@@ -1,14 +1,34 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
 from problog.program import PrologString
 from problog import get_evaluatable
 import os
 import subprocess
 
+
+# to do: a list with all the users, and their results
+
 app = Flask(__name__)
 CORS(app)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite3'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
 
 model_file_path = "../src/trained_model.pl"
+
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    full_name = db.Column(db.String(50))
+    age = db.Column(db.Integer)
+    sex = db.Column(db.String(10))
+    chest_pain_level = db.Column(db.String(30))
+    blood_pressure = db.Column(db.Integer)
+    cholesterol = db.Column(db.Integer)
+    max_heart_rate = db.Column(db.Integer)
+    diagnostic = db.Column(db.String(30))
 
 
 def generate_trained_model():
@@ -48,7 +68,97 @@ def submit():
         prog = create_model(program_string, query)
         eval = process_prediction(prog)
         print(eval)
+        data_for_db = prepare_data_for_db(form_data)
+        if eval[5] > eval[14]:
+            data_for_db["Diagnostic"] = "Has CAD"
+        elif eval[5] == eval[14]:
+            if eval[6] > eval[15]:
+                data_for_db["Diagnostic"] = "Has CAD"
+            else:
+                data_for_db["Diagnostic"] = "Healthy"
+        else:
+            data_for_db["Diagnostic"] = "Healthy"
+
+        new_user = User(
+            full_name=data_for_db["fullName"],
+            age=data_for_db["age"],
+            sex=data_for_db["sex"],
+            chest_pain_level=data_for_db["chestPain"],
+            blood_pressure=data_for_db["restingBP"],
+            cholesterol=data_for_db["cholesterol"],
+            max_heart_rate=data_for_db["maxHeartRate"],
+            diagnostic=data_for_db["Diagnostic"]
+        )
+        db.session.add(new_user)
+        db.session.commit()
         return jsonify(eval)
+
+
+# Route to handle the users history
+@app.route('/api/get_users', methods=['OPTIONS', 'GET'])
+def get_users():
+    if request.method == 'OPTIONS':
+        # Handle the OPTIONS request
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET')
+        return response
+    elif request.method == 'GET':
+        try:
+            # Query the database to retrieve user history data
+            users = User.query.all()
+
+            # Serialize the user data to a list of dictionaries
+            user_data = [
+                {
+                    'full_name': user.full_name,
+                    'age': user.age,
+                    'sex': user.sex,
+                    'chest_pain_level': user.chest_pain_level,
+                    'blood_pressure': user.blood_pressure,
+                    'cholesterol': user.cholesterol,
+                    'max_heart_rate': user.max_heart_rate,
+                    'diagnostic': user.diagnostic
+                }
+                for user in users
+            ]
+
+            # Return the user data as JSON
+            return jsonify(user_data)
+        except Exception as e:
+            return jsonify({'error': str(e)})
+
+
+def prepare_data_for_db(data):
+    form_fields = {}
+    for key, value in data.items():
+        if key == "fullName":
+            form_fields[key] = value
+        elif key == "age":
+            form_fields[key] = int(value)
+        elif key == "sex":
+            if int(value) == 0:
+                form_fields[key] = "Female"
+            else:
+                form_fields[key] = "Male"
+        elif key == "chestPain":
+            if int(value) == 0:
+                form_fields[key] = "severe"
+            elif int(value) == 1:
+                form_fields[key] = "high"
+            elif int(value) == 2:
+                form_fields[key] = "moderate"
+            else:
+                form_fields[key] = "normal"
+        elif key == "restingBP":
+            form_fields[key] = int(value)
+        elif key == "cholesterol":
+            form_fields[key] = int(value)
+        elif key == "maxHeartRate":
+            form_fields[key] = int(value)
+
+    return form_fields
 
 
 def create_query(data):
